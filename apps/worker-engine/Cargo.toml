@@ -1,0 +1,30 @@
+[package]
+name = "worker-engine"
+description = "PROCESS 2: internal gRPC server, single-consumer job dispatcher, handlers, PostgreSQL persistence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core.workspace = true
+engine-application.workspace = true
+engine-handlers.workspace = true
+engine-persistence.workspace = true
+engine-ipc.workspace = true
+engine-observability.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+tonic.workspace = true
+tower-http.workspace = true
+http.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx.workspace = true
+dotenvy.workspace = true
+thiserror.workspace = true

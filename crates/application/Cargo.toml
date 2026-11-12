@@ -1,0 +1,24 @@
+[package]
+name = "engine-application"
+description = "The worker's application layer: bounded MPSC queue, single-consumer dispatcher, admission, retries, reconciliation and status fan-out."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-core.workspace = true
+engine-observability.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+engine-handlers.workspace = true
+tempfile.workspace = true

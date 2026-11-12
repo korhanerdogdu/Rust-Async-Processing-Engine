@@ -1,0 +1,97 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/api-gateway",
+    "apps/worker-engine",
+    "crates/core",
+    "crates/application",
+    "crates/handlers",
+    "crates/persistence",
+    "crates/ipc",
+    "crates/observability",
+    "tools/engine-cli",
+    "tests/e2e",
+]
+default-members = [
+    "apps/api-gateway",
+    "apps/worker-engine",
+    "crates/core",
+    "crates/application",
+    "crates/handlers",
+    "crates/persistence",
+    "crates/ipc",
+    "crates/observability",
+    "tools/engine-cli",
+    "tests/e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# --- internal crates ---
+engine-core = { path = "crates/core" }
+engine-application = { path = "crates/application" }
+engine-handlers = { path = "crates/handlers" }
+engine-persistence = { path = "crates/persistence" }
+engine-ipc = { path = "crates/ipc" }
+engine-observability = { path = "crates/observability" }
+
+# --- async runtime & utilities ---
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "process", "fs", "io-util", "net"] }
+tokio-util = { version = "0.7.16", features = ["rt", "io"] }
+tokio-stream = { version = "0.1.17", features = ["sync", "net"] }
+futures = "0.3.31"
+
+# --- HTTP / gRPC ---
+axum = { version = "0.8.9", features = ["ws"] }
+tower = { version = "0.5.2", features = ["limit", "load-shed", "timeout", "util"] }
+tower-http = { version = "0.6.6", features = ["trace", "request-id", "timeout", "limit", "util", "catch-panic"] }
+http = "1.3"
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tonic-reflection = "0.14"
+prost = "0.14"
+prost-types = "0.14"
+protoc-bin-vendored = "3.2"
+
+# --- serialization / ids / time ---
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", features = ["preserve_order"] }
+uuid = { version = "1.17", features = ["v4", "serde"] }
+chrono = { version = "0.4.41", default-features = false, features = ["clock", "serde", "std"] }
+thiserror = "2.0.12"
+
+# --- observability ---
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json", "fmt", "registry", "std"] }
+tracing-opentelemetry = "0.34"
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-http = "0.33"
+
+# --- persistence ---
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+
+# --- compute / handlers ---
+rayon = "1.11"
+sha2 = "0.10.9"
+hex = "0.4.3"
+unicode-segmentation = "1.12"
+lopdf = { version = "0.38", default-features = false }
+
+# --- tooling ---
+dotenvy = "0.15.7"
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
+tokio-tungstenite = "0.27"
+tempfile = "3.20"
+
+[profile.release]
+debug = 1

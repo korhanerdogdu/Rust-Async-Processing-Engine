@@ -1,0 +1,20 @@
+[package]
+name = "engine-cli"
+description = "Sample client: REST/gRPC/WebSocket submission, watching, sequential demo and load generation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine-ipc.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

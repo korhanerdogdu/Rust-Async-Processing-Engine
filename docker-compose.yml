@@ -1,0 +1,108 @@
+# Rust Async Processing Engine – local development infrastructure.
+#
+#   docker compose up -d                          # infra only (run the Rust processes on the host)
+#   docker compose --profile apps up -d --build   # infra + containerized api-gateway and worker-engine
+#
+# Ports published on the host (all bound to 127.0.0.1 – local demo only):
+#   55432  PostgreSQL + TimescaleDB   (host port chosen to avoid clashing with a local PostgreSQL on 5432)
+#   4317   OTLP gRPC  -> OpenTelemetry Collector
+#   4318   OTLP HTTP  -> OpenTelemetry Collector (the Rust processes export here)
+#   13133  Collector health check
+#   16686  Jaeger UI
+#   8080   api-gateway REST + WebSocket   (profile "apps")
+#   50051  api-gateway public gRPC        (profile "apps")
+# The worker's internal gRPC port (50052) is NOT published in container mode:
+# it is reachable only on the private compose network.
+
+name: rust-async-engine
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-engine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-engine_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-engine}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-engine} -d ${POSTGRES_DB:-engine}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
+    depends_on:
+      - jaeger
+
+  worker-engine:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker-engine
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engine}:${POSTGRES_PASSWORD:-engine_dev_password}@timescaledb:5432/${POSTGRES_DB:-engine}
+      WORKER_GRPC_ADDR: 0.0.0.0:50052
+      WORKER_ID: worker-1
+      ARTIFACT_DIR: /var/lib/engine/artifacts
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      LOG_FORMAT: json
+      MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
+      QUEUE_CAPACITY: ${QUEUE_CAPACITY:-64}
+      RAYON_THREADS: ${RAYON_THREADS:-4}
+      PDF_BROWSER_PATH: /usr/bin/chromium
+      # Chromium's sandbox needs user namespaces, which unprivileged containers
+      # usually lack. Disabled ONLY in this local container; the HTML is
+      # additionally isolated by CSP + a dead proxy (see README "Security").
+      PDF_NO_SANDBOX: "true"
+    volumes:
+      - artifacts:/var/lib/engine/artifacts
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  api-gateway:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: api-gateway
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-engine}:${POSTGRES_PASSWORD:-engine_dev_password}@timescaledb:5432/${POSTGRES_DB:-engine}
+      GATEWAY_HTTP_ADDR: 0.0.0.0:8080
+      GATEWAY_GRPC_ADDR: 0.0.0.0:50051
+      WORKER_ENDPOINT: http://worker-engine:50052
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      LOG_FORMAT: json
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:50051:50051"
+    depends_on:
+      worker-engine:
+        condition: service_started
+
+volumes:
+  pgdata:
+  artifacts:

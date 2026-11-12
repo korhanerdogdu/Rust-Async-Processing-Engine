@@ -1,0 +1,137 @@
+{
+  "info": {
+    "name": "Rust Async Processing Engine",
+    "description": "REST istekleri. Önce sistemi başlat (docker compose up -d, worker-engine, api-gateway). 'Submit' istekleri dönen job_id'yi otomatik olarak {{jobId}} değişkenine kaydeder; sonraki istekler onu kullanır. WebSocket ve gRPC istekleri bu dosyada olamaz: Postman'de New > WebSocket / New > gRPC ile aç (README'deki Postman bölümüne bak).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8080" },
+    { "key": "jobId", "value": "" }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Submit yanıtındaki job_id'yi otomatik sakla",
+          "try {",
+          "  const body = pm.response.json();",
+          "  if (body && body.job && body.job.job_id) {",
+          "    pm.collectionVariables.set('jobId', body.job.job_id);",
+          "    console.log('jobId =', body.job.job_id);",
+          "  }",
+          "} catch (e) {}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Sağlık",
+      "item": [
+        { "name": "Health - live", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/health/live" } },
+        { "name": "Health - ready", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/health/ready" } }
+      ]
+    },
+    {
+      "name": "1. İş gönder (Submit)",
+      "item": [
+        {
+          "name": "simulate_delay (5 sn)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"simulate_delay\",\n  \"payload\": { \"seconds\": 5 }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "text_transform (uppercase)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"text_transform\",\n  \"payload\": { \"text\": \"merhaba dünya\", \"operation\": \"uppercase\" }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "json_format (geçerli)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"json_format\",\n  \"payload\": { \"input\": \"{\\\"b\\\":1,\\\"a\\\":[1,2]}\", \"indent\": 2, \"sort_keys\": true }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "json_format (bozuk JSON -> iş failed olur)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"json_format\",\n  \"payload\": { \"input\": \"{\\\"a\\\": }\" }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "cpu_compute (Rayon, asal sayma)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"cpu_compute\",\n  \"payload\": { \"from\": 0, \"to\": 5000000, \"compare_sequential\": true }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "html_to_pdf",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"html_to_pdf\",\n  \"payload\": { \"html\": \"<h1>Merhaba PDF</h1><p>Rust Async Processing Engine</p>\" }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "Idempotency-Key ile gönder (2 kez gönder: aynı job_id döner)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "postman-demo-1" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"text_transform\",\n  \"payload\": { \"text\": \"tekrar\", \"operation\": \"reverse\" }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        },
+        {
+          "name": "HATA ÖRNEĞİ: doğrulama (422)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"job_type\": \"simulate_delay\",\n  \"payload\": { \"seconds\": 999 }\n}" },
+            "url": "{{baseUrl}}/api/v1/jobs"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. İşi takip et",
+      "item": [
+        { "name": "Job durumu", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/jobs/{{jobId}}" } },
+        { "name": "Job sonucu (bitmediyse 409)", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/jobs/{{jobId}}/result" } },
+        { "name": "Durum geçmişi", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/jobs/{{jobId}}/history" } },
+        { "name": "PDF indir (html_to_pdf işi için)", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/jobs/{{jobId}}/artifact" } },
+        { "name": "İptal et", "request": { "method": "POST", "url": "{{baseUrl}}/api/v1/jobs/{{jobId}}/cancel" } },
+        { "name": "Kuyruktaki işleri listele", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/jobs?status=queued&limit=20" } },
+        { "name": "Son işleri listele", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/jobs?limit=20" } }
+      ]
+    },
+    {
+      "name": "3. Sistem bilgisi",
+      "item": [
+        { "name": "Engine stats (kuyruk, thread, görev)", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/engine/stats" } },
+        { "name": "Metrics (Prometheus)", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/metrics" } }
+      ]
+    }
+  ]
+}
