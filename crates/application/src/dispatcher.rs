@@ -19,6 +19,42 @@
 //! * `MAX_ACTIVE_JOBS=1` (default) makes queueing visible: one `processing`,
 //!   the rest `queued`. Set it to 2/4/8 for parallel execution – there is still
 //!   exactly one receiver.
+//! 
+//! 
+//! 
+//! 
+//! 
+//! 
+/*
+
+
+
+
+dispatcher.rs:205   shared.registry.execute(ctx, command)
+        ↓
+registry.rs         self.handlers.get(&command.kind())   // listeye bak
+        ↓
+                    handler.execute(ctx, command)        // bulunan handler'ı çalıştır
+        ↓
+delay.rs            DelayHandler::execute  → tokio::time::sleep(5 sn)
+
+
+
+Burada işler şöyle bölünmüş:
+
+Dispatcher "bu işi çalıştır" diyor. İşin hangi tipte olduğuyla ilgilenmiyor.
+
+Registry işin tipine bakıp doğru handler'ı buluyor ve çağırıyor.
+
+Handler asıl işi yapıyor.
+
+Bu ayrımın faydası şu: Yeni bir iş tipi eklediğinde dispatcher'a hiç dokunmuyorsun. Sadece yeni handler'ı yazıp listeye ekliyorsun.
+
+
+
+
+
+*/
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -37,7 +73,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::engine::Shared;
 use crate::queue::{InflightGuard, JobEnvelope};
 
-pub(crate) async fn run_consumer<S: JobStore>(
+pub(crate) async fn run_consumer<S: JobStore>( // run_consumer, yani tek tüketici, kuyruktan bir iş alıyor. Sonra running.spawn(execute_job(...)) ile o iş için yeni bir görev açıyor.
     shared: Arc<Shared<S>>,
     mut receiver: mpsc::Receiver<JobEnvelope>,
     stop: CancellationToken,
@@ -212,6 +248,34 @@ async fn execute_job_inner<S: JobStore>(
             Err(HandlerError::Timeout)
         }
     };
+
+    /*
+    
+
+execute'u dispatcher.rs:205 satırında, execute_job_inner fonksiyonunun içinde çağırıyor:
+
+let outcome = match tokio::time::timeout(timeout, shared.registry.execute(ctx, command))
+
+
+Bu satıra nasıl gelindiğine bakalım:
+
+1. run_consumer, yani tek tüketici, kuyruktan bir iş alıyor. Sonra running.spawn(execute_job(...)) ile o iş için yeni bir görev açıyor.
+
+2. execute_job bir trace span'i açıp execute_job_inner'ı çağırıyor.
+
+3. execute_job_inner önce claim_job ile işi "processing" yapıyor. Sonra 205. satırda shared.registry.execute(ctx, command) çağrılıyor.
+
+
+shared.registry, main'in motora verdiği tablonun ta kendisi. 
+tokio::time::timeout(...) ise handler'ın çalışmasına bir süre sınırı koyuyor. 
+Süre dolarsa iş Timeout hatası alıyor.
+
+
+
+     */
+
+
+
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     shared.metrics.gauge("engine_active_jobs", &[]).dec();
     shared

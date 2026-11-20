@@ -8,6 +8,69 @@
 //!
 //! It holds **no job state**: every job operation is an IPC call to the
 //! worker-engine process (`WORKER_ENDPOINT`, default http://127.0.0.1:50052).
+//! 
+
+
+
+/*
+
+
+gRPC (Tonic):
+
+Client → Protobuf (binary)
+    ↓
+Tonic → Rust struct (SubmitJobRequest)
+    ↓
+grpc.rs (gRPC Handler)
+    ↓
+payload_json → serde_json::Value
+    ↓
+service.rs (GatewayService)
+    ↓
+Internal gRPC → Protobuf (binary)
+    ↓
+Worker Engine
+
+
+
+
+REST (Axum):
+
+
+Client → HTTP/JSON
+    ↓
+Axum + Serde → Rust struct (SubmitBody)
+
+    ↓
+rest.rs (REST Handler)
+    ↓
+service.rs (GatewayService)
+    ↓
+Internal gRPC → Protobuf (binary)
+    ↓
+Worker Engine
+
+
+
+
+GatewayService her iki isteği de ortak mantıkla işler. JobCommand::parse ile doğrular, ardından WorkerEngineClient aracılığıyla internal gRPC isteği gönderir.
+
+Yani Tonic gRPC için, Axum REST için kullanılıyor. İkisi de gelen verileri Rust tiplerine dönüştürüp aynı servis katmanına iletiyor.
+
+
+İstek tipine göre uygun handlera otomatik mi gidiyor?
+
+Evet, otomatik olarak uygun handler'a yönlendirilir. Bunu framework yapar:
+REST (Axum): HTTP metodu ve URL'ye bakar. Örneğin POST /api/v1/jobs → rest.rs::submit_job
+gRPC (Tonic): Protobuf'ta tanımlanan servis ve metot adına bakar. Örneğin JobGateway/SubmitJob → grpc.rs::submit_job
+Sonrasında her iki handler da GatewayService::submit() metodunu çağırır.
+Yani hangi handler'ın çalışacağını sen her istekte manuel belirlemezsin; routing tanımlarını önceden yaparsın, framework uygun handler'ı seçer.
+
+
+
+
+
+*/
 
 mod config;
 mod grpc;

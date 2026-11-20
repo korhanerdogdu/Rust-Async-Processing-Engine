@@ -19,6 +19,95 @@
 //! Shutdown (Ctrl-C / SIGTERM): engine drains (bounded), gRPC server stops,
 //! log writer drains (bounded), spans are flushed.
 
+
+
+
+
+/*
+
+
+
+
+Runtime hazır olunca run() çalışıyor ve sırayla şunlar oluyor:
+
+1. recovery::cleanup_artifacts : Bir önceki çökmeden yarım kalmış PDF dosyaları varsa siliniyor.
+
+2. default_handlers(...) ve HandlerRegistry::new : Beş iş tipinin handler'ı kaydediliyor.
+
+   Handler = bir iş tipini yapan kod. Mesela simulate_delay işini DelayHandler yapar.
+   Projede 5 iş tipi var, her birinin kendi handler'ı var.
+
+   Bunu bir restoran gibi düşün:
+     - Her yemeğin bir aşçısı var. "Pizza gelirse Ali yapar, çorba gelirse Ayşe yapar."
+     - Restoran açılırken bu liste duvara asılır.
+     - Sipariş gelince listeye bakılır ve doğru aşçıya verilir.
+
+   Burada da aynısı oluyor:
+     - default_handlers(...) -> 5 aşçıyı (handler'ı) hazırlar.
+     - HandlerRegistry::new(...) -> "hangi iş tipi -> hangi handler" listesini yapar:
+           simulate_delay -> DelayHandler
+           html_to_pdf    -> HtmlToPdfHandler
+           cpu_compute    -> CpuComputeHandler
+           json_format    -> JsonFormatHandler
+           text_transform -> TextTransformHandler
+
+   Sonra bir iş çalışacağı zaman listeye bakılır, doğru handler bulunur ve çalıştırılır.
+   (Bu bakma işi crates/application/src/registry.rs içindeki execute fonksiyonunda.)
+
+   "Kaydetmek" = bu listeyi worker açılırken bir kere hazırlamak.
+
+
+let handlers = default_handlers(...)?;          // 5 handler'ı hazırla
+let registry = HandlerRegistry::new(handlers);  // sözlüğü doldur
+...
+queue::start_engine(&cfg, pool, registry, ...); // motora teslim et
+
+main execute'u hiç çağırmıyor. İş geldiğinde execute'u dispatcher çağırıyor.
+
+Restoran benzetmesiyle söylersek: HandlerRegistry duvardaki "hangi yemeği hangi aşçı yapar" listesi. 
+main o listeyi açılışta yazıp asıyor. Sipariş geldiğinde de dispatcher listeye bakıp siparişi doğru aşçıya veriyor.
+
+
+3. gRPC sunucusu açılıyor, ama motor henüz yok. Bu yüzden bu aşamada gelen her istek
+"UNAVAILABLE" alıyor.
+
+
+4. recovery::connect_database : Veritabanı gelene kadar tekrar tekrar deneniyor, bağlanınca migration'lar
+çalışıyor.
+
+
+5. run_log_writer ve run_metrics_writer görevleri başlıyor.
+
+
+6. queue::start_engine → EngineHandle::start . Asıl önemli an bu
+
+
+
+main.rs              default_handlers(...)                       // 5 handler hazırla
+  ↓
+main.rs              HandlerRegistry::new(handlers)              // tablo kuruldu (bir kez)
+  ↓
+main.rs              queue::start_engine(..., registry, ...)     // motora teslim
+  ↓
+worker queue.rs      EngineHandle::start(..., registry, ...)
+  ↓
+engine.rs            Shared { registry, ... }                    // tablo BURADA yaşıyor (Arc içinde)
+                     tokio::spawn(run_consumer(shared, ...))     // ayrı bir görev başlar
+  ↓  (main burada bitti, artık beklemede)
+dispatcher.rs        run_consumer döngüsü: iş geldikçe ↓
+                       running.spawn(execute_job(...))          // her iş için yeni görev
+                         → execute_job_inner
+                           → shared.registry.execute(ctx, cmd)  // 205. satır
+  ↓
+registry.rs          self.handlers.get(&command.kind())         // tablodan handler'ı bul
+                       → handler.execute(ctx, command)
+  ↓
+delay.rs             DelayHandler::execute                      // asıl iş
+                       → tokio::time::sleep(5 sn)
+
+
+
+*/
 mod config;
 mod grpc_server;
 mod queue;
@@ -29,7 +118,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use engine_application::HandlerRegistry;
+use engine_application::HandlerRegistry; // registry.rs den implement ediliyor. lib crate. 
 use engine_handlers::{ArtifactStore, default_handlers};
 use engine_ipc::pb::worker_engine_server::WorkerEngineServer;
 use engine_observability::propagation::server_span;
@@ -78,6 +167,15 @@ fn main() -> ExitCode {
         }
     };
 
+
+    /*
+    
+    cfg.tokio_worker_threads değeri TOKIO_WORKER_THREADS ortam değişkeninden okunuyor.
+
+    Thread sayısını biz belirliyoruz
+    
+     */
+
     let log_rx = telemetry.take_log_receiver();
     let sink_stats = telemetry.sink_stats.clone();
     let otlp = telemetry.otlp_enabled;
@@ -117,7 +215,14 @@ async fn run(
     let artifacts = ArtifactStore::new(&cfg.artifact_dir)?;
     recovery::cleanup_artifacts(&artifacts);
     let handlers = default_handlers(&cfg.handlers, artifacts.clone())?;
-    let registry = HandlerRegistry::new(handlers);
+    let registry = HandlerRegistry::new(handlers); 
+
+
+    // **********************************************************************************************
+    // **********************************************************************************************
+    // **********************************************************************************************
+    // **********************************************************************************************
+
     tracing::info!(event = "handlers.registered", kinds = ?registry.kinds(), "job handlers registered");
     metrics
         .gauge("rayon_pool_threads", &[])

@@ -5,4 +5,15 @@
 *.pdf
 /tmp
 z.txt
+run.txt
+docker.txt
 CLAUDE.md
+
+# Kişisel notlar (txt / md). Projenin kendi dokümanları hariç tutulmaz.
+*.txt
+*.md
+!README.md
+!docs/*.md
+/Rust-Async-Processing-Engine.pptx
+/Rust-Async-Processing-Engine-Diyagramlar.pptx
+/Rust-Async-Processing-Engine-12.pptx

@@ -63,6 +63,31 @@ impl JobGateway for PublicGrpc {
         }))
     }
 
+
+    /*
+    
+
+
+Bu kod, gRPC üzerinden gelen SubmitJob isteğini karşılayan handler metodudur.
+
+
+gRPC Client (Protobuf)
+       ↓
+grpc.rs → submit_job()
+       ↓
+payload_json → serde_json::Value
+       ↓
+GatewayService::submit()
+       ↓
+Worker Engine (internal gRPC)
+       ↓
+Job bilgisi geri gelir
+       ↓
+Protobuf Response → Client
+    
+    
+     */
+
     async fn get_job(
         &self,
         request: Request<pb::GetJobRequest>,
