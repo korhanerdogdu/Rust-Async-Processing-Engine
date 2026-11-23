@@ -23,6 +23,10 @@ prime counting with sequential baseline).
 Statuses: `queued → processing → completed | failed`, plus `cancelled`; retries go back to
 `queued`. `POST` returns **202** only after the job is durably committed.
 
+The gateway can also be opened to the local network so that several client PCs send jobs to
+one server while their requests are told apart in the logs (`client_addr`, `client_name`) –
+see [LAN multi-PC test](#lan-multi-pc-test).
+
 ## Documentation
 
 | Doc | Contents |
@@ -99,6 +103,9 @@ Ctrl-C to a single child process).
 | 4317 / 4318 | OTel Collector OTLP gRPC / HTTP |
 | 16686 | Jaeger UI |
 
+Everything listens on `127.0.0.1` by default. In [LAN mode](#lan-multi-pc-test) only the
+gateway ports (8080, 50051) are opened on `0.0.0.0`; the worker, database and Jaeger stay local.
+
 ## Try it
 
 ### REST (curl)
@@ -167,8 +174,10 @@ cargo run -p engine-cli -- stats
 ```
 
 Targets default to `http://127.0.0.1:8080` / `http://127.0.0.1:50051`; override with
-`--http-url` / `--grpc-url` (or `ENGINE_HTTP` / `ENGINE_GRPC`). A plain curl walkthrough is in
-[scripts/demo.sh](scripts/demo.sh).
+`--http-url` / `--grpc-url` (or `ENGINE_HTTP` / `ENGINE_GRPC`). REST requests carry an
+`x-client-name` header (default: the computer name; override with `--client-name` or
+`ENGINE_CLIENT_NAME`) so the gateway logs show which machine sent them. A plain curl
+walkthrough is in [scripts/demo.sh](scripts/demo.sh).
 
 > Windows PowerShell 5.1 note: `Invoke-RestMethod -Body '<string>'` does not send UTF-8, so
 > non-ASCII text is rejected as `malformed_request`. Send `[Text.Encoding]::UTF8.GetBytes(...)`
@@ -204,6 +213,72 @@ and is closed after a terminal status. Reconnecting yields a fresh snapshot.
 5. Open Jaeger (http://127.0.0.1:16686), pick a trace: spans from `api-gateway` and
    `worker-engine`, including the later `job.execute`.
 6. Query TimescaleDB (below).
+
+## LAN multi-PC test
+
+One PC runs the engine; 3–4 other PCs on the same network send requests to it, and the
+server's logs show who sent what.
+
+```text
+client PCs (same Wi-Fi / hotspot)          server PC
+  pc-1  lan-client.ps1 ─┐            ┌──────────────────────────────────────────┐
+  pc-2  lan-client.ps1 ─┼── LAN ───► │ api-gateway   0.0.0.0:8080 / :50051      │
+  pc-3  Postman ────────┘            │ worker-engine 127.0.0.1:50052 (private)  │
+                                     │ TimescaleDB, Jaeger (local only)         │
+                                     └──────────────────────────────────────────┘
+```
+
+**Server PC** – [scripts/lan-server.ps1](scripts/lan-server.ps1) sets the bind addresses as
+environment variables for that process only, so `.env` stays on `127.0.0.1`:
+
+```powershell
+.\scripts\lan-server.ps1 -Role firewall          # once, as Administrator: allow inbound TCP 8080/50051
+docker compose up -d
+.\scripts\lan-server.ps1 -Role worker            # terminal 1 (optional: -MaxActiveJobs 4 -QueueCapacity 100)
+.\scripts\lan-server.ps1 -Role gateway           # terminal 2: prints the LAN IP to give to clients
+.\scripts\lan-server.ps1 -Role info              # LAN IPs + firewall state
+.\scripts\lan-server.ps1 -Role firewall-remove   # afterwards, as Administrator
+```
+
+**Client PCs** – copy the single file [scripts/lan-client.ps1](scripts/lan-client.ps1); it needs
+nothing but Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\lan-client.ps1 -Server <server-ip> -Name pc-1
+powershell -ExecutionPolicy Bypass -File .\lan-client.ps1 -Server <server-ip> -Name pc-2 -Scenario slow -Count 3 -DelaySeconds 5
+powershell -ExecutionPolicy Bypass -File .\lan-client.ps1 -Server <server-ip> -Name pc-3 -Scenario burst -Count 150
+```
+
+| Scenario | Sends | Shows |
+|---|---|---|
+| `mixed` (default) | one request every `-IntervalMs`, rotating `simulate_delay`, `text_transform`, `json_format`, `cpu_compute` and one deliberately invalid request | all job types run; invalid input gets 422 |
+| `slow` | `simulate_delay` jobs of `-DelaySeconds` each | with `MAX_ACTIVE_JOBS=1` jobs run one after another, the rest wait `queued` |
+| `burst` | `-Count` short jobs at the same moment | the bounded queue fills, the excess gets 429, accepted jobs still complete |
+
+The script checks `health/ready`, prints every response, a summary per HTTP status, and then
+follows accepted jobs until they are terminal. Postman works too; add the header
+`x-client-name: <name>` (Metadata for gRPC).
+
+**What is logged** – every gateway request span (REST, WebSocket session, public gRPC) carries:
+
+* `client_addr` – the caller's TCP address, taken from the connection;
+* `client_name` – the value of the optional `x-client-name` header (`-` if absent).
+
+Both appear on the gateway console and in `operational_logs.attributes`, so requests can be
+grouped per machine:
+
+```sql
+SELECT attributes->>'client_name' AS pc,
+       split_part(attributes->>'client_addr', ':', 1) AS ip,
+       attributes->>'status' AS http_status, count(*)
+FROM operational_logs
+WHERE event = 'http.response' AND attributes ? 'client_addr'
+GROUP BY 1, 2, 3 ORDER BY 1, 3;
+```
+
+The worker does not receive the client identity; join on `job_id` (e.g. the gateway's
+`http.job_accepted` event) to attribute worker events such as `job.processing` /
+`job.completed` to a client.
 
 ## SQL
 
@@ -260,6 +335,10 @@ Load experiments: `scripts/load-test.ps1` / `scripts/load-test.sh`; Rust experim
 
 * **Local demo only.** No authentication; everything binds to 127.0.0.1 by default. Do not
   expose the gateway, and never the worker's internal port, to the public internet.
+* LAN mode (`lan-server.ps1 -Role gateway`) opens the unauthenticated gateway to everyone on
+  the local network. Use it only on a trusted network for the duration of a test, and remove
+  the firewall rule afterwards. `x-client-name` is self-reported by the client and only a
+  label, not an identity.
 * HTML→PDF: the document gets a CSP `<meta>` (`default-src 'none'`: no scripts, no remote or
   `file://` subresources, inline styles and `data:` images only), all browser traffic goes to
   a dead proxy (`127.0.0.1:9`, loopback included), each render uses a throw-away profile, and
