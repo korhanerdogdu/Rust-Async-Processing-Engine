@@ -112,6 +112,10 @@ impl DbLogLayer {
 struct SpanCorrelation {
     job_id: Option<Uuid>,
     request_id: Option<String>,
+    /// Caller's TCP address / self-reported name (gateway request spans).
+    /// Copied into `attributes` of every event inside the span.
+    client_addr: Option<String>,
+    client_name: Option<String>,
 }
 
 #[derive(Default)]
@@ -120,13 +124,33 @@ struct FieldCollector {
     event: Option<String>,
     job_id: Option<Uuid>,
     request_id: Option<String>,
+    client_addr: Option<String>,
+    client_name: Option<String>,
     attributes: Map<String, Value>,
 }
 
 impl FieldCollector {
+    fn has_correlation(&self) -> bool {
+        self.job_id.is_some()
+            || self.request_id.is_some()
+            || self.client_addr.is_some()
+            || self.client_name.is_some()
+    }
+
     fn put(&mut self, field: &Field, value: Value) {
         let name = field.name();
         match name {
+            "client_addr" | "client_name" => {
+                let s = value_to_string(value);
+                if s != "-" {
+                    self.attributes.insert(name.into(), Value::String(s.clone()));
+                    if name == "client_addr" {
+                        self.client_addr = Some(s);
+                    } else {
+                        self.client_name = Some(s);
+                    }
+                }
+            }
             "message" => self.message = Some(value_to_string(value)),
             "event" => self.event = Some(value_to_string(value)),
             "job_id" => {
@@ -193,11 +217,13 @@ where
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let mut c = FieldCollector::default();
         attrs.record(&mut c);
-        if c.job_id.is_some() || c.request_id.is_some() {
+        if c.has_correlation() {
             if let Some(span) = ctx.span(id) {
                 span.extensions_mut().insert(SpanCorrelation {
                     job_id: c.job_id,
                     request_id: c.request_id,
+                    client_addr: c.client_addr,
+                    client_name: c.client_name,
                 });
             }
         }
@@ -206,7 +232,7 @@ where
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
         let mut c = FieldCollector::default();
         values.record(&mut c);
-        if c.job_id.is_none() && c.request_id.is_none() {
+        if !c.has_correlation() {
             return;
         }
         if let Some(span) = ctx.span(id) {
@@ -215,10 +241,14 @@ where
                 Some(existing) => {
                     existing.job_id = c.job_id.or(existing.job_id);
                     existing.request_id = c.request_id.or(existing.request_id.take());
+                    existing.client_addr = c.client_addr.or(existing.client_addr.take());
+                    existing.client_name = c.client_name.or(existing.client_name.take());
                 }
                 None => ext.insert(SpanCorrelation {
                     job_id: c.job_id,
                     request_id: c.request_id,
+                    client_addr: c.client_addr,
+                    client_name: c.client_name,
                 }),
             }
         }
@@ -244,6 +274,16 @@ where
                     }
                     if c.request_id.is_none() {
                         c.request_id = corr.request_id.clone();
+                    }
+                    for (key, value) in [
+                        ("client_addr", &corr.client_addr),
+                        ("client_name", &corr.client_name),
+                    ] {
+                        if let Some(v) = value {
+                            c.attributes
+                                .entry(key)
+                                .or_insert_with(|| Value::String(v.clone()));
+                        }
                     }
                 }
             }
@@ -342,6 +382,40 @@ mod tests {
         assert_eq!(rec.attributes["html"], "[redacted]");
         assert_eq!(rec.service, "test-svc");
         assert!(rx.try_recv().is_err(), "debug event must be filtered");
+    }
+
+    #[test]
+    fn events_inherit_client_identity_from_request_span() {
+        let (layer, mut rx, _stats) = layer(16);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "request",
+                request_id = "req-9",
+                client_addr = "192.168.1.23:51544",
+                client_name = "pc-2"
+            );
+            let _g = span.enter();
+            tracing::info!(event = "http.job_accepted", "202 Accepted");
+        });
+        let rec = rx.try_recv().expect("one record");
+        assert_eq!(rec.request_id.as_deref(), Some("req-9"));
+        assert_eq!(rec.attributes["client_addr"], "192.168.1.23:51544");
+        assert_eq!(rec.attributes["client_name"], "pc-2");
+    }
+
+    #[test]
+    fn placeholder_client_fields_are_not_stored() {
+        let (layer, mut rx, _stats) = layer(16);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("request", client_addr = "-", client_name = "-");
+            let _g = span.enter();
+            tracing::info!("no client info");
+        });
+        let rec = rx.try_recv().expect("one record");
+        assert!(rec.attributes.get("client_addr").is_none());
+        assert!(rec.attributes.get("client_name").is_none());
     }
 
     #[test]

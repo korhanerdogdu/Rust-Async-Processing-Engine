@@ -41,6 +41,10 @@ struct Cli {
         global = true
     )]
     grpc_url: String,
+    /// Label sent as `x-client-name` on REST requests so the server logs show
+    /// which machine sent what. Defaults to this computer's name.
+    #[arg(long = "client-name", env = "ENGINE_CLIENT_NAME", global = true)]
+    client_name: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -111,8 +115,21 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> AnyResult<()> {
+    let client_name = cli
+        .client_name
+        .clone()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .filter(|s| !s.trim().is_empty());
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(name) = &client_name {
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(name.trim()) {
+            headers.insert("x-client-name", v);
+        }
+    }
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .default_headers(headers)
         .build()?;
     match cli.cmd {
         Cmd::Submit {

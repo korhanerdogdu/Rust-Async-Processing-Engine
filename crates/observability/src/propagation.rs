@@ -10,6 +10,7 @@
 //!   the execution span is parented with [`context_from_traceparent`].
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use opentelemetry::propagation::{Extractor, Injector};
 use opentelemetry::trace::TraceContextExt;
@@ -35,14 +36,47 @@ pub fn extract_from_headers(headers: &http::HeaderMap) -> Context {
     global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(headers)))
 }
 
+/// Optional, client-chosen label (e.g. `pc-2`) so logs can tell several
+/// client machines apart even behind the same NAT. Purely informational.
+pub const CLIENT_NAME_HEADER: &str = "x-client-name";
+
+/// Longest accepted `x-client-name`; longer values are truncated.
+const MAX_CLIENT_NAME: usize = 64;
+
 /// Builds the server-side span for an inbound HTTP or gRPC request.
 pub fn server_span<B>(req: &http::Request<B>, kind: &'static str) -> Span {
+    server_span_with_client(req, kind, None)
+}
+
+/// Like [`server_span`], plus the TCP peer address of the caller. Every event
+/// logged inside the request (console and `operational_logs`) then carries
+/// `client_addr` / `client_name`, so requests from different machines can be
+/// told apart.
+pub fn server_span_with_client<B>(
+    req: &http::Request<B>,
+    kind: &'static str,
+    client_addr: Option<SocketAddr>,
+) -> Span {
     let request_id = req
         .headers()
         .get(REQUEST_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-")
         .to_string();
+    let client_addr = client_addr
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let client_name: String = req
+        .headers()
+        .get(CLIENT_NAME_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_CLIENT_NAME)
+        .collect();
     let path = req.uri().path().to_string();
     let span = tracing::info_span!(
         "request",
@@ -52,6 +86,8 @@ pub fn server_span<B>(req: &http::Request<B>, kind: &'static str) -> Span {
         http.method = %req.method(),
         url.path = %path,
         request_id = %request_id,
+        client_addr = %client_addr,
+        client_name = %client_name,
         http.status_code = tracing::field::Empty,
     );
     let parent = extract_from_headers(req.headers());

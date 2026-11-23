@@ -28,6 +28,7 @@
 //! rejected by the worker queue, and vice versa.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -35,10 +36,11 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use engine_observability::MetricsRegistry;
-use engine_observability::propagation::server_span;
+use engine_observability::propagation::server_span_with_client;
 use tower::{BoxError, Layer, Service, ServiceBuilder};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -135,7 +137,14 @@ async fn handle_overload(err: BoxError) -> axum::response::Response {
 /// Applies the global stack to a router.
 pub fn apply(router: Router, cfg: &GatewayConfig, metrics: Arc<MetricsRegistry>) -> Router {
     let trace = TraceLayer::new_for_http()
-        .make_span_with(|req: &Request<axum::body::Body>| server_span(req, "http"))
+        .make_span_with(|req: &Request<axum::body::Body>| {
+            // Present because main.rs serves with `into_make_service_with_connect_info`.
+            let peer = req
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ci| ci.0);
+            server_span_with_client(req, "http", peer)
+        })
         .on_response(
             |res: &Response<axum::body::Body>, latency: Duration, span: &Span| {
                 span.record("http.status_code", res.status().as_u16());

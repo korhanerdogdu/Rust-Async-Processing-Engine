@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use engine_core::JobId;
 use serde_json::json;
 use tokio::sync::OwnedSemaphorePermit;
+use tracing::Instrument;
 
 use crate::hub::{WatchItem, watch_job};
 use crate::rest::JobView;
@@ -39,7 +40,10 @@ pub async fn ws_job(
     let Ok(permit) = state.ws_slots.clone().try_acquire_owned() else {
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"error": {"code": "too_many_websockets", "message": "websocket limit reached"}}))).into_response();
     };
-    ws.on_upgrade(move |socket| serve_socket(socket, state, job_id, permit))
+    // `on_upgrade` runs the socket in a new task, which would lose the request
+    // span. Run it inside a child span so ws.* logs keep client_addr/client_name.
+    let session = tracing::info_span!("ws.session", %job_id);
+    ws.on_upgrade(move |socket| serve_socket(socket, state, job_id, permit).instrument(session))
 }
 
 async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {

@@ -88,7 +88,7 @@ use std::time::Duration;
 
 use engine_ipc::client::{WorkerClientConfig, connect_lazy};
 use engine_ipc::pb::job_gateway_server::JobGatewayServer;
-use engine_observability::propagation::server_span;
+use engine_observability::propagation::server_span_with_client;
 use engine_observability::sink::{SinkConfig, run_log_writer, run_metrics_writer};
 use engine_observability::{MetricsRegistry, TelemetryConfig};
 use tokio::sync::Semaphore;
@@ -233,8 +233,13 @@ async fn run(
     let http = tokio::spawn({
         let stop = shutdown.clone();
         async move {
-            axum::serve(http_listener, app)
-                .with_graceful_shutdown(stop.cancelled_owned())
+            // `with_connect_info` exposes the caller's socket address to the
+            // trace layer, so every log line shows which machine sent it.
+            axum::serve(
+                http_listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(stop.cancelled_owned())
                 .await
         }
     });
@@ -260,7 +265,13 @@ async fn run(
                 .concurrency_limit_per_connection(256)
                 .layer(
                     TraceLayer::new_for_grpc()
-                        .make_span_with(|req: &http::Request<_>| server_span(req, "grpc.public")),
+                        .make_span_with(|req: &http::Request<_>| {
+                            let peer = req
+                                .extensions()
+                                .get::<tonic::transport::server::TcpConnectInfo>()
+                                .and_then(|ci| ci.remote_addr());
+                            server_span_with_client(req, "grpc.public", peer)
+                        }),
                 )
                 .add_service(JobGatewayServer::new(public))
                 .add_service(reflection)
